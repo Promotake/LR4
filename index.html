@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <title>ЛР4 — робот на квадратном AR-маркере</title>
+  <style>
+    /* AR.js modifies body width and margins in portrait mode to create a 4:3 stage.
+       Prevent those inline changes from shifting the page and revealing a white strip. */
+    html, body {
+      position: fixed !important;
+      inset: 0 !important;
+      width: 100vw !important;
+      height: 100vh !important;
+      height: 100dvh !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      margin-left: 0 !important;
+      margin-top: 0 !important;
+      overflow: hidden !important;
+      background: #000 !important;
+    }
+
+    /* Let AR.js determine the real video element dimensions and crop offsets.
+       We must NOT overwrite its width/height or margins with object-fit: cover,
+       otherwise video framing and AR projection stop matching. */
+    /* IMPORTANT: the video and WebGL stage receive ONE identical CSS zoom.
+       This crops away top/bottom gaps WITHOUT stretching the live picture
+       or changing the relative registration of robot and marker. */
+    #arjs-video, a-scene#arScene {
+      transform-origin: center center !important;
+      transform: var(--ar-fullscreen-transform, none) !important;
+      -webkit-transform-origin: center center !important;
+      -webkit-transform: var(--ar-fullscreen-transform, none) !important;
+    }
+
+    #arjs-video {
+      position: fixed !important;
+      left: 0 !important;
+      top: 0 !important;
+      display: block !important;
+      z-index: 0 !important;
+      max-width: none !important;
+      max-height: none !important;
+      opacity: 1 !important;
+      visibility: visible !important;
+      object-fit: fill !important;
+    }
+
+    /* Render the 3D scene at EXACTLY the video stage size and offset.
+       The viewport crops both identically, so the robot stays on the marker. */
+    a-scene#arScene {
+      display: block !important;
+      position: fixed !important;
+      top: var(--track-top, 0px) !important;
+      left: var(--track-left, 0px) !important;
+      width: var(--track-width, 100vw) !important;
+      height: var(--track-height, 100dvh) !important;
+      padding: 0 !important;
+      margin: 0 !important;
+      z-index: 1 !important;
+      overflow: visible !important;
+      background: transparent !important;
+      pointer-events: none !important;
+    }
+    a-scene#arScene canvas.a-canvas {
+      display: block !important;
+      width: 100% !important;
+      height: 100% !important;
+      background: transparent !important;
+    }
+  </style>
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+  <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.8/aframe/build/aframe-ar.js"></script>
+  <script>
+    // AR.js calculates its own camera/marker sizes. Do not independently
+    // stretch the camera: zoom the video AND the tracked 3D stage together.
+    (function () {
+      'use strict';
+      function startLayoutSync() {
+        var scene = document.getElementById('arScene');
+        if (!scene) return;
+        var lastStage = '';
+        var lastCover = '';
+
+        function ensureTransparentRenderer() {
+          if (!scene.renderer) return;
+          scene.renderer.setClearColor(0x000000, 0);
+          scene.renderer.setClearAlpha(0);
+          if (scene.object3D) scene.object3D.background = null;
+        }
+
+        function syncLayers() {
+          ensureTransparentRenderer();
+          var video = document.getElementById('arjs-video');
+          if (!video || !video.videoWidth || !video.videoHeight) return;
+
+          // The original AR.js values are the same projection that worked
+          // with this custom .patt marker in the preceding version.
+          var width = parseFloat(video.style.width);
+          var height = parseFloat(video.style.height);
+          var left = parseFloat(video.style.marginLeft) || 0;
+          var top = parseFloat(video.style.marginTop) || 0;
+          if (![width, height, left, top].every(Number.isFinite) || width < 1 || height < 1) return;
+
+          // First align the underlying video and A-Frame stage 1:1.
+          var stageKey = [width, height, left, top].map(function (n) { return n.toFixed(2); }).join(',');
+          if (stageKey !== lastStage) {
+            lastStage = stageKey;
+            scene.style.setProperty('--track-width', width + 'px');
+            scene.style.setProperty('--track-height', height + 'px');
+            scene.style.setProperty('--track-left', left + 'px');
+            scene.style.setProperty('--track-top', top + 'px');
+            if (scene.is && scene.is('loaded') && typeof scene.resize === 'function') {
+              scene.resize();
+            } else if (scene.renderer) {
+              scene.renderer.setSize(Math.round(width), Math.round(height), false);
+            }
+          }
+
+          // Then ZOOM THE TWO LAYERS IDENTICALLY for portrait full-screen:
+          // object-fit:contain gives the black bars seen on iPhone; using
+          // the same 'cover' transform for both maintains the AR alignment.
+          var vw = window.innerWidth;
+          var vh = window.innerHeight;
+          if (vw < 1 || vh < 1) return;
+          var zoom = Math.max(1, vw / width, vh / height);
+          var dx = vw / 2 - (left + width / 2);
+          var dy = vh / 2 - (top + height / 2);
+          var coverKey = [zoom, dx, dy, vw, vh].map(function (n) { return n.toFixed(3); }).join(',');
+          if (coverKey !== lastCover) {
+            lastCover = coverKey;
+            var transform = 'translate3d(' + dx.toFixed(2) + 'px, ' + dy.toFixed(2) + 'px, 0) scale(' + zoom.toFixed(5) + ')';
+            document.documentElement.style.setProperty('--ar-fullscreen-transform', transform);
+          }
+        }
+
+        // Recheck because AR.js changes video dimensions after camera init
+        // and Safari changes viewport height when the toolbar collapses.
+        window.addEventListener('resize', syncLayers);
+        window.addEventListener('orientationchange', syncLayers);
+        window.addEventListener('arjs-video-loaded', syncLayers);
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', syncLayers);
+        document.addEventListener('visibilitychange', function () {
+          if (!document.hidden) requestAnimationFrame(syncLayers);
+        });
+        scene.addEventListener('renderstart', syncLayers);
+        scene.addEventListener('loaded', syncLayers);
+        window.setInterval(syncLayers, 220);
+        syncLayers();
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startLayoutSync);
+      else startLayoutSync();
+    }());
+  </script>
+</head>
+<body>
+  <a-scene id="arScene"
+    embedded
+    vr-mode-ui="enabled: false"
+    loading-screen="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    renderer="alpha: true; antialias: true; precision: medium;"
+    arjs="sourceType: webcam; videoTexture: false; trackingMethod: best; debugUIEnabled: false; patternRatio: 0.5;">
+
+    <a-assets timeout="30000">
+      <a-asset-item id="robotModel" src="./assets/models/astrabot.glb"></a-asset-item>
+    </a-assets>
+
+    <a-marker id="squareMarker" type="pattern" url="./marker/square_marker.patt" emitevents="true"
+      smooth="true" smooth-count="12" smooth-tolerance="0.02" smooth-threshold="3">
+      <!-- Place the model's geometric horizontal center over marker origin.
+           Stop continuous rotation; it creates apparent off-center movement. -->
+      <a-entity id="robot" gltf-model="#robotModel"
+        position="-0.0200 0.0076 0.0306"
+        rotation="0 0 0"
+        scale="0.85 0.85 0.85">
+      </a-entity>
+      <a-light type="ambient" intensity="1.35"></a-light>
+      <a-light type="directional" intensity="1.25" position="1 2 1"></a-light>
+    </a-marker>
+    <a-entity camera></a-entity>
+  </a-scene>
+</body>
+</html>
